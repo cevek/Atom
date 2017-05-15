@@ -8,18 +8,22 @@ const enum AtomState {
 
 let activeChildAtom: Atom;
 let autorunAtoms = new Set();
+let id = 0;
 export class Atom<T = {}> {
+    id = id++;
     fn: () => T;
     value: Maybe<T>;
-    parents: Map<Atom, any>;
-    children: Maybe<Set<Atom>>;
+
+    parentsArr: any[];
+    childrenArr: Maybe<Atom[]>;
+
     state: AtomState;
 
     private constructor(fn: Maybe<() => T>, value: Maybe<T>, public name: string) {
         this.fn = fn!;
         this.value = value;
-        this.parents = fn === void 0 ? (void 0)! : new Map();
-        this.children = void 0;
+        this.parentsArr = fn === void 0 ? (void 0)! : [];
+        this.childrenArr = void 0;
         this.value = value;
         this.state = fn === void 0 ? AtomState.ACTUAL : AtomState.NOT_CALLED;
     }
@@ -38,27 +42,31 @@ export class Atom<T = {}> {
         atom.autorunCall();
     }
 
-    set(value: T) {
-        console.log('set', value, this);
-        this.value = value;
-        this.setChildrenMaybeState();
+    static callAutoruns() {
         for (const atom of autorunAtoms) {
             atom.autorunCall();
         }
         autorunAtoms.clear();
     }
 
+    set(value: T) {
+        // console.log('set', value, this);
+        this.value = value;
+        this.setChildrenMaybeState();
+        // Atom.callAutoruns();
+    }
+
     setChildrenMaybeState() {
-        if (this.children !== void 0) {
-            for (const child of this.children) {
-                if (child.state === AtomState.AUTORUN) {
-                    autorunAtoms.add(child);
-                    continue;
-                }
-                if (child.state !== AtomState.PARENTS_MAYBE_UPDATED) {
-                    console.log('setChildrenMaybeState', child);
+        if (this.childrenArr !== void 0) {
+            for (var i = 0; i < this.childrenArr.length; i++) {
+                const child = this.childrenArr[i];
+                if (child.state === AtomState.ACTUAL) {
+                    // console.log('setChildrenMaybeState', child);
                     child.state = AtomState.PARENTS_MAYBE_UPDATED;
                     child.setChildrenMaybeState();
+                }
+                else if (child.state === AtomState.AUTORUN) {
+                    autorunAtoms.add(child);
                 }
             }
         }
@@ -67,23 +75,33 @@ export class Atom<T = {}> {
     autorunCall() {
         let prevActiveAtom = activeChildAtom;
         activeChildAtom = this;
-        for (const [parent, value] of this.parents) {
-            parent.children!.delete(this);
-        }
-        this.parents.clear();
-        console.log('autorunCall', this);
+        this.clearParents();
+        // // console.log('autorunCall', this);
         this.fn();
         activeChildAtom = prevActiveAtom;
+    }
+
+    clearParents() {
+        for (var i = 0; i < this.parentsArr.length; i += 2) {
+            var parent = this.parentsArr[i] as Atom;
+            for (var j = 0; j < parent.childrenArr!.length; j++) {
+                if (this === parent.childrenArr![j]) {
+                    parent.childrenArr!.splice(j, 2);
+                    break;
+                }
+            }
+        }
+        var len = this.parentsArr.length;
+        for (var i = 0; i < len; i++) {
+            this.parentsArr.pop();
+        }
     }
 
     recalc() {
         let prevActiveAtom = activeChildAtom;
         activeChildAtom = this;
-        for (const [parent, value] of this.parents) {
-            parent.children!.delete(this);
-        }
-        this.parents.clear();
-        console.log('recalc', this);
+        this.clearParents();
+        // console.log('recalc', this);
         const newValue = this.fn();
         const hasChanged = newValue !== this.value;
         if (hasChanged) {
@@ -97,31 +115,60 @@ export class Atom<T = {}> {
 
     needToRecalc() {
         if (this.state === AtomState.PARENTS_MAYBE_UPDATED) {
-            if (!this.parents) {
-                console.log(this);
-            }
-            for (const [parent, value] of this.parents) {
+            for (var i = 0; i < this.parentsArr.length; i += 2) {
+                const parent = this.parentsArr[i];
+                const value = this.parentsArr[i + 1];
                 if (parent.needToRecalc() || parent.value !== value) {
                     if (this.recalc()) {
                         return true;
                     }
                 }
             }
+            this.state = AtomState.ACTUAL;
         }
         return false;
     }
 
+    addChild(atom: Atom) {
+        if (this.childrenArr === void 0) {
+            this.childrenArr = [];
+        }
+        var found = false;
+        for (var i = 0; i < this.childrenArr.length; i++) {
+            const child = this.childrenArr[i];
+            if (atom === child) {
+                found = true;
+                break;
+            }
+        }
+        if (found === false) {
+            this.childrenArr.push(atom);
+        }
+    }
+
+    addParent(atom: Atom) {
+        var foundParent = false;
+        for (var i = 0; i < this.parentsArr.length; i += 2) {
+            const parent = this.parentsArr[i];
+            if (parent === atom) {
+                foundParent = true;
+                break;
+            }
+        }
+        if (foundParent === false) {
+            this.parentsArr.push(atom, atom.value);
+        }
+    }
+
     get(): T {
-        if ((this.state !== AtomState.ACTUAL && this.needToRecalc()) || this.state === AtomState.NOT_CALLED) {
+        if ((this.state === AtomState.PARENTS_MAYBE_UPDATED && this.needToRecalc()) || this.state === AtomState.NOT_CALLED) {
             this.recalc();
         }
         if (activeChildAtom !== void 0) {
-            activeChildAtom.parents.set(this, this.value);
-            if (this.children === void 0) {
-                this.children = new Set();
-            }
-            this.children.add(activeChildAtom);
+            activeChildAtom.addParent(this);
+            this.addChild(activeChildAtom);
         }
         return this.value!;
     }
 }
+
