@@ -9,12 +9,20 @@ const enum AtomState {
 let activeChildAtom: Atom;
 let autorunAtoms = new Set();
 let id = 0;
+
+const changesStack: {stack: {changes: number[], transactionId: number; length: number}[], length: number} = {
+    stack: [],
+    length: 0
+};
+let changes: {changes: number[], transactionId: number; length: number};
+let transactionId = 0;
+
 export class Atom<T = {}> {
     id = id++;
     fn: () => T;
     value: Maybe<T>;
 
-    parentsArr: any[];
+    parentsArr: (Atom | number)[];
     childrenArr: Maybe<Atom[]>;
 
     state: AtomState;
@@ -66,7 +74,7 @@ export class Atom<T = {}> {
                     child.setChildrenMaybeState();
                 }
                 else if (child.state === AtomState.AUTORUN) {
-                    autorunAtoms.add(child);
+                    // autorunAtoms.add(child);
                 }
             }
         }
@@ -97,16 +105,64 @@ export class Atom<T = {}> {
         }
     }
 
+    removeChild(child: Atom) {
+        for (var i = 0; i < this.childrenArr!.length; i++) {
+            if (child === this.childrenArr![i]) {
+                this.childrenArr!.splice(i, 1);
+                return;
+            }
+        }
+    }
+
+    pushIntoParentsIfAbsent(atom: Atom) {
+        for (var i = 0; i < this.parentsArr.length; i += 2) {
+            if (this.parentsArr[i] === atom) {
+                break;
+            }
+        }
+        this.parentsArr.push(atom, atom.value as number);
+    }
+
+
     recalc() {
         let prevActiveAtom = activeChildAtom;
         activeChildAtom = this;
-        this.clearParents();
+
+        // console.log(changesStack);
+        if (changesStack.length === 0) {
+            changesStack.stack[changesStack.length++] = {
+                changes: [],
+                transactionId: 0,
+                length: 0
+            };
+        }
+        changes = changesStack.stack[--changesStack.length];
+        changes.length = this.parentsArr.length;
+        if (changes.length > changes.changes.length) {
+            changes.changes[changes.length - 1] = -1;
+        }
+        changes.transactionId = transactionId++;
+
         // console.log('recalc', this);
         const newValue = this.fn();
         const hasChanged = newValue !== this.value;
         if (hasChanged) {
             this.setChildrenMaybeState();
         }
+
+        let shift = 0;
+        // console.log(changes);
+        for (var i = 0; i < changes.length; i += 2) {
+            if (changes.changes[i] !== changes.transactionId) {
+                // console.log(i, shift, this.parentsArr.length);
+                const parent = this.parentsArr[i - shift] as Atom;
+                parent.removeChild(this);
+                this.parentsArr.splice(i - shift, 2);
+                shift += 2;
+            }
+        }
+        changesStack.stack[changesStack.length++] = changes;
+
         this.value = newValue;
         this.state = AtomState.ACTUAL;
         activeChildAtom = prevActiveAtom;
@@ -116,9 +172,9 @@ export class Atom<T = {}> {
     needToRecalc() {
         if (this.state === AtomState.PARENTS_MAYBE_UPDATED) {
             for (var i = 0; i < this.parentsArr.length; i += 2) {
-                const parent = this.parentsArr[i];
+                const parent = this.parentsArr[i] as Atom;
                 const value = this.parentsArr[i + 1];
-                if (parent.needToRecalc() || parent.value !== value) {
+                if (parent.value !== value || parent.needToRecalc()) {
                     if (this.recalc()) {
                         return true;
                     }
@@ -133,31 +189,25 @@ export class Atom<T = {}> {
         if (this.childrenArr === void 0) {
             this.childrenArr = [];
         }
-        var found = false;
         for (var i = 0; i < this.childrenArr.length; i++) {
             const child = this.childrenArr[i];
             if (atom === child) {
-                found = true;
-                break;
+                return i;
             }
         }
-        if (found === false) {
-            this.childrenArr.push(atom);
-        }
+        this.childrenArr.push(atom);
+        return -1;
     }
 
     addParent(atom: Atom) {
-        var foundParent = false;
         for (var i = 0; i < this.parentsArr.length; i += 2) {
             const parent = this.parentsArr[i];
             if (parent === atom) {
-                foundParent = true;
-                break;
+                return i;
             }
         }
-        if (foundParent === false) {
-            this.parentsArr.push(atom, atom.value);
-        }
+        this.parentsArr.push(atom, atom.value as number);
+        return -1;
     }
 
     get(): T {
@@ -165,8 +215,12 @@ export class Atom<T = {}> {
             this.recalc();
         }
         if (activeChildAtom !== void 0) {
-            activeChildAtom.addParent(this);
-            this.addChild(activeChildAtom);
+            const foundPos = activeChildAtom.addParent(this);
+            if (foundPos === -1) {
+                this.addChild(activeChildAtom);
+            } else {
+                changes.changes[foundPos] = changes.transactionId;
+            }
         }
         return this.value!;
     }
