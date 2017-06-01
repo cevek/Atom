@@ -24,7 +24,7 @@ type ParentTuple = Atom | ValueId | boolean;
 let id = 0;
 let activeChildAtom: Atom;
 const autorunAtoms = new FastArray<Atom>();
-let atomsKnowingOwnChildren: Atom[] = [];
+const atomsKnowingOwnChildren = new FastArray<Atom>();
 const calcInfoPool = new Pool(() => new CalcInfo());
 
 
@@ -271,10 +271,11 @@ export class Atom<T = {}> {
     static doGarbageCollection() {
         if (atomsKnowingOwnChildren.length > 0) {
             for (let i = 0; i < atomsKnowingOwnChildren.length; i++) {
-                const atom = atomsKnowingOwnChildren[i];
+                const atom = atomsKnowingOwnChildren.items[i];
+                atomsKnowingOwnChildren.items[i] = (void 0)!;
                 atom.clearKnownAboutChildren();
             }
-            atomsKnowingOwnChildren = [];
+            atomsKnowingOwnChildren.reset();
         }
         for (let i = 0; i < calcInfoPool.cache.length; i++) {
             const calcInfo = calcInfoPool.cache[i];
