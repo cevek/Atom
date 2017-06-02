@@ -9,11 +9,10 @@ export class Pool<T> {
             this.cache[0] = this.factory();
             this.length++;
         }
-        return this.cache[this.length - 1];
+        return this.cache[--this.length];
     }
 
     restore(value: T) {
-        this.cache[this.length] = value;
-        this.length++;
+        this.cache[this.length++] = value;
     }
 }

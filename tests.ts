@@ -1,4 +1,4 @@
-import {Atom} from './index';
+import {Atom} from './index2';
 
 const seed = Atom.value(1, 'seed');
 const b = Atom.calc(() => {
@@ -17,6 +17,11 @@ Atom.autorun(() => {
 }, 'autorun');
 
 
+declare const global:any;
+global.seed = seed;
+global.b = b;
+global.c = c;
+global.d = d;
 
 console.log(d.get());
 seed.set(2);
@@ -32,18 +37,15 @@ if (!console.profile) {
 }
 
 function fast() {
-    console.time('perf');
-    console.profile('perfx');
-
-    var r;
     for (var i = 0; i < 1e6; i++) {
         seed.set(i);
-        r = i === -1 ? 0 : d.get();
+        d.get();
     }
-    console.timeEnd('perf');
-    console.profileEnd('perfx');
-    return r;
 }
+console.time('perf');
+console.profile('perfx');
 fast();
+console.timeEnd('perf');
+console.profileEnd('perfx');
 // console.log(d.get());
 
