@@ -118,7 +118,8 @@ export class Atom<T = {}> {
                     this.childrenArr[j] = this.childrenArr[j + 1];
                 }
                 this.childrenArrLength--;
-                break;
+                this.childrenArr[this.childrenArrLength] = (void 0)!;
+                return;
             }
         }
     }
