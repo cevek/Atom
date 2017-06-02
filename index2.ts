@@ -235,6 +235,9 @@ export class Atom<T = {}> {
 
             case AtomState.DESTROYED:
                 return;
+
+            case AtomState.CALCULATING:
+                throw new Error('Recursive call: ' + this.name);
         }
     }
 
