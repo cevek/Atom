@@ -6,6 +6,7 @@ type Maybe<T> = T | undefined;
 
 const enum AtomState {
     ACTUAL = 1,
+    CALCULATING = 5,
     NOT_CALLED = 10,
     PARENTS_MAYBE_UPDATED = 100,
     DESTROYED = 1000,
@@ -82,7 +83,10 @@ export class Atom<T = {}> {
         if (value !== this.value) {
             this.value = value;
             this.valueId++;
-            this.setChildrenMaybeState();
+            for (let i = 0; i < this.childrenArrLength; i++) {
+                const child = this.childrenArr[i];
+                child.setMaybeStateOnlyToActualOrCalculating();
+            }
             Atom.scheduleAutorunRunner();
         }
     }
@@ -101,17 +105,23 @@ export class Atom<T = {}> {
         }
     }
 
-    private setChildrenMaybeState() {
-        for (let i = 0; i < this.childrenArrLength; i++) {
-            const child = this.childrenArr[i];
-            child.setMaybeState();
+    private setMaybeStateOnlyToActual() {
+        if (this.state === AtomState.ACTUAL) {
+            this.state = AtomState.PARENTS_MAYBE_UPDATED;
+            for (let i = 0; i < this.childrenArrLength; i++) {
+                const child = this.childrenArr[i];
+                child.setMaybeStateOnlyToActual();
+            }
         }
     }
 
-    private setMaybeState() {
-        if (this.state === AtomState.ACTUAL) {
+    private setMaybeStateOnlyToActualOrCalculating() {
+        if (this.state === AtomState.ACTUAL || this.state === AtomState.CALCULATING) {
             this.state = AtomState.PARENTS_MAYBE_UPDATED;
-            this.setChildrenMaybeState();
+            for (let i = 0; i < this.childrenArrLength; i++) {
+                const child = this.childrenArr[i];
+                child.setMaybeStateOnlyToActualOrCalculating();
+            }
         }
     }
 
@@ -177,15 +187,21 @@ export class Atom<T = {}> {
         activeChildAtom = this;
         this.calcInfo = calcInfoPool.get();
         this.calcInfo.init();
+        this.state = AtomState.CALCULATING;
         const newValue = this.fn();
         const hasChanged = newValue !== this.value;
         if (hasChanged) {
             this.valueId++;
             this.value = newValue;
-            this.setChildrenMaybeState();
+            for (let i = 0; i < this.childrenArrLength; i++) {
+                const child = this.childrenArr[i];
+                child.setMaybeStateOnlyToActual();
+            }
         }
         this.rebuildParents();
-        this.state = AtomState.ACTUAL;
+        if (this.state === AtomState.CALCULATING) {
+            this.state = AtomState.ACTUAL;
+        }
         calcInfoPool.restore(this.calcInfo);
         this.calcInfo = (void 0)!;
         activeChildAtom = prevActiveAtom;
@@ -236,7 +252,7 @@ export class Atom<T = {}> {
     private clearKnownAboutChildren() {
         for (let i = 0; i < this.childrenArrLength; i++) {
             const child = this.childrenArr[i];
-            child.setMaybeState();
+            child.setMaybeStateOnlyToActual();
             for (let j = 2; j < child.parentsArr.length; j += 3) {
                 child.parentsArr[j] = false;
             }
