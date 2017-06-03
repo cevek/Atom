@@ -27,7 +27,7 @@ let activeChildAtom: Atom;
 const autorunAtoms = new FastArray<Atom>();
 const atomsKnowingOwnChildren = new FastArray<Atom>();
 const calcInfoPool = new Pool(() => new CalcInfo());
-
+let autorunsRunnerScheduled = false;
 
 export class Atom<T = {}> {
     id = id++;
@@ -36,9 +36,9 @@ export class Atom<T = {}> {
     private value: Maybe<T>;
     private type: AtomType;
 
-    private calcInfo: CalcInfo;
-    private parentsArr: ParentTuple[];
-    private childrenArr: Atom[];
+    private calcInfo: CalcInfo = (void 0)!;
+    private parentsArr: Maybe<ParentTuple[]> = (void 0)!;
+    private childrenArr: Atom[] = (void 0)!;
     private childrenArrLength = 0;
 
     private state: AtomState;
@@ -46,9 +46,6 @@ export class Atom<T = {}> {
     private constructor(type: AtomType, fn: Maybe<() => T>, value: Maybe<T>, public name: string) {
         this.type = type;
         this.fn = fn!;
-        this.value = value;
-        this.parentsArr = fn === void 0 ? (void 0)! : [];
-        this.childrenArr = (void 0)!;
         this.value = value;
         this.state = fn === void 0 ? AtomState.ACTUAL : AtomState.NOT_CALLED;
     }
@@ -87,16 +84,20 @@ export class Atom<T = {}> {
                 const child = this.childrenArr[i];
                 child.setMaybeStateOnlyToActualOrCalculating();
             }
-            Atom.scheduleAutorunRunner();
+            if (autorunsRunnerScheduled === false) {
+                Atom.scheduleAutorunRunner();
+            }
         }
     }
 
     destroy() {
-        for (let i = 0; i < this.parentsArr.length; i += 3) {
-            const parent = this.parentsArr[i] as Atom;
-            parent.removeChild(this);
+        if (this.parentsArr !== void 0) {
+            for (let i = 0; i < this.parentsArr.length; i += 3) {
+                const parent = this.parentsArr[i] as Atom;
+                parent.removeChild(this);
+            }
+            this.parentsArr = (void 0)!;
         }
-        this.parentsArr = (void 0)!;
         this.childrenArr = (void 0)!;
         this.childrenArrLength = 0;
         this.state = AtomState.DESTROYED;
@@ -139,36 +140,48 @@ export class Atom<T = {}> {
     }
 
     private rebuildParents() {
-        if (this.calcInfo.changesCount * 3 === this.parentsArr.length && this.calcInfo.addedParents.length === 0) {
-            for (let i = 0; i < this.parentsArr.length; i += 3) {
-                const parent = this.parentsArr[i] as Atom;
-                this.parentsArr[i + 1] = parent.valueId;
+        if (this.parentsArr === void 0) {
+            if (this.calcInfo.addedParents.length === 0) {
+                return;
             }
-            return;
+        } else {
+            if (this.calcInfo.changesCount * 3 === this.parentsArr.length && this.calcInfo.addedParents.length === 0) {
+                for (let i = 0; i < this.parentsArr.length; i += 3) {
+                    const parent = this.parentsArr[i] as Atom;
+                    this.parentsArr[i + 1] = parent.valueId;
+                }
+                return;
+            }
         }
+        this.makeNewParents();
+    }
+
+    private makeNewParents() {
         const newParentsArr: ParentTuple[] = new Array((this.calcInfo.changesCount + this.calcInfo.addedParents.length) * 3);
         const addedParents = this.calcInfo.sortAdded();
 
         let k = 0;
         let j = 0;
-        for (let i = 0; i < this.parentsArr.length; i += 3) {
-            const parent = this.parentsArr[i] as Atom;
-            if (this.calcInfo.changes[i] === this.calcInfo.transactionId) {
-                while (j < addedParents.length) {
-                    const nextAddedParent = addedParents[j];
-                    if (nextAddedParent.id > parent.id) {
-                        break;
+        if (this.parentsArr !== void 0) {
+            for (let i = 0; i < this.parentsArr.length; i += 3) {
+                const parent = this.parentsArr[i] as Atom;
+                if (this.calcInfo.changes[i] === this.calcInfo.transactionId) {
+                    while (j < addedParents.length) {
+                        const nextAddedParent = addedParents[j];
+                        if (nextAddedParent.id > parent.id) {
+                            break;
+                        }
+                        newParentsArr[k++] = nextAddedParent;
+                        newParentsArr[k++] = nextAddedParent.valueId;
+                        newParentsArr[k++] = true;
+                        j++;
                     }
-                    newParentsArr[k++] = nextAddedParent;
-                    newParentsArr[k++] = nextAddedParent.valueId;
+                    newParentsArr[k++] = parent;
+                    newParentsArr[k++] = parent.valueId;
                     newParentsArr[k++] = true;
-                    j++;
+                } else {
+                    parent.removeChild(this);
                 }
-                newParentsArr[k++] = parent;
-                newParentsArr[k++] = parent.valueId;
-                newParentsArr[k++] = true;
-            } else {
-                parent.removeChild(this);
             }
         }
         while (j < addedParents.length) {
@@ -193,16 +206,18 @@ export class Atom<T = {}> {
         if (hasChanged) {
             this.valueId++;
             this.value = newValue;
-            for (let i = 0; i < this.childrenArrLength; i++) {
-                const child = this.childrenArr[i];
-                child.setMaybeStateOnlyToActual();
+            if (this.childrenArrLength > 0) {
+                for (let i = 0; i < this.childrenArrLength; i++) {
+                    const child = this.childrenArr[i];
+                    child.setMaybeStateOnlyToActual();
+                }
             }
         }
         this.rebuildParents();
         if (this.state === AtomState.CALCULATING) {
             this.state = AtomState.ACTUAL;
         }
-        calcInfoPool.restore(this.calcInfo);
+        calcInfoPool.restore();
         this.calcInfo = (void 0)!;
         activeChildAtom = prevActiveAtom;
         return hasChanged;
@@ -211,19 +226,21 @@ export class Atom<T = {}> {
     private actualize() {
         switch (this.state) {
             case AtomState.PARENTS_MAYBE_UPDATED:
-                for (let i = 0; i < this.parentsArr.length; i += 3) {
-                    const parent = this.parentsArr[i] as Atom;
-                    const valueId = this.parentsArr[i + 1] as ValueId;
-                    const parentKnowMe = this.parentsArr[i + 2] as boolean;
-                    if (parent.state !== AtomState.ACTUAL) {
-                        parent.actualize();
-                    }
-                    if (parentKnowMe === false) {
-                        parent.addChild(this);
-                    }
-                    if (parent.valueId !== valueId) {
-                        this.recalc();
-                        return;
+                if (this.parentsArr !== void 0) {
+                    for (let i = 0; i < this.parentsArr.length; i += 3) {
+                        const parent = this.parentsArr[i] as Atom;
+                        const valueId = this.parentsArr[i + 1] as ValueId;
+                        const parentKnowMe = this.parentsArr[i + 2] as boolean;
+                        if (parent.state !== AtomState.ACTUAL) {
+                            parent.actualize();
+                        }
+                        if (parentKnowMe === false) {
+                            parent.addChild(this);
+                        }
+                        if (parent.valueId !== valueId) {
+                            this.recalc();
+                            return;
+                        }
                     }
                 }
                 this.state = AtomState.ACTUAL;
@@ -247,17 +264,21 @@ export class Atom<T = {}> {
             atomsKnowingOwnChildren.push(this);
         }
         if (this.childrenArr === void 0) {
-            this.childrenArr = [];
+            this.childrenArr = [atom];
+        } else {
+            this.childrenArr[this.childrenArrLength] = atom;
         }
-        this.childrenArr[this.childrenArrLength++] = atom;
+        this.childrenArrLength++;
     }
 
     private clearKnownAboutChildren() {
         for (let i = 0; i < this.childrenArrLength; i++) {
             const child = this.childrenArr[i];
             child.setMaybeStateOnlyToActual();
-            for (let j = 2; j < child.parentsArr.length; j += 3) {
-                child.parentsArr[j] = false;
+            if (child.parentsArr !== void 0) {
+                for (let j = 2; j < child.parentsArr.length; j += 3) {
+                    child.parentsArr[j] = false;
+                }
             }
             this.childrenArr[i] = (void 0)!;
         }
@@ -265,7 +286,7 @@ export class Atom<T = {}> {
     }
 
     private addParent(parent: Atom) {
-        const foundParentPos = this.searchParent(parent);
+        const foundParentPos = this.parentsArr === void 0 ? -1 : this.searchParent(parent);
         if (foundParentPos === -1) {
             return this.calcInfo.addParentIfNonExistent(parent);
         }
@@ -275,8 +296,9 @@ export class Atom<T = {}> {
 
     private searchParent(search: Atom) {
         const parents = this.parentsArr;
-        if (parents.length < 10) {
-            for (let i = 0; i < parents.length; i++) {
+        if (parents === void 0) return -1;
+        if (parents.length < 15) {
+            for (let i = 0; i < parents.length; i += 3) {
                 if (parents[i] === search) {
                     return i;
                 }
@@ -300,11 +322,9 @@ export class Atom<T = {}> {
         return -1;
     }
 
-    private static autorunsRunnerScheduled = false;
-
     private static scheduleAutorunRunner() {
-        if (Atom.autorunsRunnerScheduled === false) {
-            Atom.autorunsRunnerScheduled = true;
+        if (autorunsRunnerScheduled === false) {
+            autorunsRunnerScheduled = true;
             setTimeout(Atom.runAutoruns, 0);
         }
     }
@@ -316,7 +336,7 @@ export class Atom<T = {}> {
                 atom.actualize();
             }
         }
-        Atom.autorunsRunnerScheduled = false;
+        autorunsRunnerScheduled = false;
     }
 
     static doGarbageCollection() {

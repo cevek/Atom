@@ -1,18 +1,18 @@
 export class Pool<T> {
     cache: T[] = [];
-    private length = 0;
+    private pos = 0;
 
     constructor(private factory: () => T) {}
 
     get() {
-        if (this.length === 0) {
-            this.cache[0] = this.factory();
-            this.length++;
+        if (this.pos >= this.cache.length) {
+            this.cache.push(this.factory());
         }
-        return this.cache[--this.length];
+        this.pos++;
+        return this.cache[this.pos - 1];
     }
 
-    restore(value: T) {
-        this.cache[this.length++] = value;
+    restore() {
+        this.pos--;
     }
 }

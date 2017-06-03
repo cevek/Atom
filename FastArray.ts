@@ -3,11 +3,13 @@ export class FastArray<T> {
     length = 0;
 
     push(value: T) {
-        this.items[this.length++] = value;
+        this.items[this.length] = value;
+        this.length++;
     }
 
     pop() {
-        return this.items[--this.length];
+        this.length--;
+        return this.items[this.length];
     }
 
     reset() {

@@ -47,5 +47,6 @@ console.profile('perfx');
 fast();
 console.timeEnd('perf');
 console.profileEnd('perfx');
+debugger;
 // console.log(d.get());
 

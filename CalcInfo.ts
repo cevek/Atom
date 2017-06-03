@@ -7,14 +7,15 @@ let calcInfoTrId = 0;
 
 export class CalcInfo {
     addedParents = new FastArray<Atom>();
-    changes: TransactionId[] = [];
+    changes = new Uint32Array(1000);
     changesCount = 0;
     transactionId: TransactionId = 0;
 
     init() {
         this.changesCount = 0;
-        this.addedParents.reset();
-        this.transactionId = calcInfoTrId++;
+        this.addedParents.length = 0;
+        calcInfoTrId++;
+        this.transactionId = calcInfoTrId;
     }
 
     sortAdded() {
