@@ -207,7 +207,7 @@ export class Atom<T = {}> {
         let prev = activeChildAtom;
         activeChildAtom = this;
         calcInfo = calcInfo.next;
-        calcInfo.init();
+        calcInfo.init(this.parentsArr === void 0 ? 0 : this.parentsArr.length);
         this.state = AtomState.CALCULATING;
         const newVal = this.fn();
         const changed = newVal !== this.value;
@@ -315,7 +315,7 @@ export class Atom<T = {}> {
             } else if (el > search.id) {
                 max = i - 1;
             } else {
-                return i;
+                return i * 3;
             }
         }
         return -1;
