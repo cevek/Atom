@@ -1,4 +1,3 @@
-import {Pool} from './Pool';
 import {CalcInfo} from './CalcInfo';
 import {FastArray} from './FastArray';
 
@@ -7,8 +6,8 @@ type Maybe<T> = T | undefined;
 const enum AtomState {
     ACTUAL = 1,
     CALCULATING = 5,
-    NOT_CALLED = 10,
-    PARENTS_MAYBE_UPDATED = 100,
+    PARENTS_MAYBE_UPDATED = 10,
+    NOT_CALLED = 100,
     DESTROYED = 1000,
 }
 
@@ -26,8 +25,16 @@ let id = 0;
 let activeChildAtom: Atom;
 const autorunAtoms = new FastArray<Atom>();
 const atomsKnowingOwnChildren = new FastArray<Atom>();
-const calcInfoPool = new Pool(() => new CalcInfo());
 let autorunsRunnerScheduled = false;
+let calcInfo = new CalcInfo();
+const firstCalcInfo = calcInfo;
+for (let i = 0; i < 500; i++) {
+    const nextCalcInfo = new CalcInfo();
+    nextCalcInfo.prev = calcInfo;
+    calcInfo.next = nextCalcInfo;
+    calcInfo = nextCalcInfo;
+}
+calcInfo = firstCalcInfo.next;
 
 export class Atom<T = {}> {
     id = id++;
@@ -36,7 +43,6 @@ export class Atom<T = {}> {
     private value: Maybe<T>;
     private type: AtomType;
 
-    private calcInfo: CalcInfo = (void 0)!;
     private parentsArr: Maybe<ParentTuple[]> = (void 0)!;
     private childrenArr: Atom[] = (void 0)!;
     private childrenArrLength = 0;
@@ -77,6 +83,9 @@ export class Atom<T = {}> {
     }
 
     set(value: T) {
+        if (this.type !== AtomType.VALUE) {
+            throw new Error('You can set only valued atoms');
+        }
         if (value !== this.value) {
             this.value = value;
             this.valueId++;
@@ -139,33 +148,32 @@ export class Atom<T = {}> {
         }
     }
 
-    private rebuildParents() {
-        if (this.parentsArr === void 0) {
-            if (this.calcInfo.addedParents.length === 0) {
-                return;
-            }
-        } else {
-            if (this.calcInfo.changesCount * 3 === this.parentsArr.length && this.calcInfo.addedParents.length === 0) {
-                for (let i = 0; i < this.parentsArr.length; i += 3) {
-                    const parent = this.parentsArr[i] as Atom;
-                    this.parentsArr[i + 1] = parent.valueId;
+    private rebuildParents(calcInfo: CalcInfo) {
+        if (calcInfo.addedParents.length === 0) {
+            const p = this.parentsArr;
+            if (p === void 0) return;
+            if (calcInfo.changesCount * 3 === p.length) {
+                if (calcInfo.oneOfParentsUpdated) {
+                    for (let i = 0; i < p.length; i += 3) {
+                        p[i + 1] = (p[i] as Atom).valueId;
+                    }
                 }
                 return;
             }
         }
-        this.makeNewParents();
+        this.makeNewParents(calcInfo);
     }
 
-    private makeNewParents() {
-        const newParentsArr: ParentTuple[] = new Array((this.calcInfo.changesCount + this.calcInfo.addedParents.length) * 3);
-        const addedParents = this.calcInfo.sortAdded();
+    private makeNewParents(calcInfo: CalcInfo) {
+        const newParentsArr: ParentTuple[] = new Array((calcInfo.changesCount + calcInfo.addedParents.length) * 3);
+        const addedParents = calcInfo.sortAdded();
 
         let k = 0;
         let j = 0;
         if (this.parentsArr !== void 0) {
             for (let i = 0; i < this.parentsArr.length; i += 3) {
                 const parent = this.parentsArr[i] as Atom;
-                if (this.calcInfo.changes[i] === this.calcInfo.transactionId) {
+                if (calcInfo.changes[i] === calcInfo.transactionId) {
                     while (j < addedParents.length) {
                         const nextAddedParent = addedParents[j];
                         if (nextAddedParent.id > parent.id) {
@@ -196,16 +204,17 @@ export class Atom<T = {}> {
 
 
     private recalc() {
-        let prevActiveAtom = activeChildAtom;
+        let prev = activeChildAtom;
         activeChildAtom = this;
-        this.calcInfo = calcInfoPool.get();
-        this.calcInfo.init();
+        calcInfo = calcInfo.next;
+        calcInfo.init();
         this.state = AtomState.CALCULATING;
-        const newValue = this.fn();
-        const hasChanged = newValue !== this.value;
-        if (hasChanged) {
+        const newVal = this.fn();
+        const changed = newVal !== this.value;
+        if (changed) {
             this.valueId++;
-            this.value = newValue;
+            this.value = newVal;
+            calcInfo.prev.oneOfParentsUpdated = true;
             if (this.childrenArrLength > 0) {
                 for (let i = 0; i < this.childrenArrLength; i++) {
                     const child = this.childrenArr[i];
@@ -213,14 +222,13 @@ export class Atom<T = {}> {
                 }
             }
         }
-        this.rebuildParents();
+        this.rebuildParents(calcInfo);
         if (this.state === AtomState.CALCULATING) {
             this.state = AtomState.ACTUAL;
         }
-        calcInfoPool.restore();
-        this.calcInfo = (void 0)!;
-        activeChildAtom = prevActiveAtom;
-        return hasChanged;
+        activeChildAtom = prev;
+        calcInfo = calcInfo.prev;
+        return changed;
     }
 
     private actualize() {
@@ -286,37 +294,37 @@ export class Atom<T = {}> {
     }
 
     private addParent(parent: Atom) {
-        const foundParentPos = this.parentsArr === void 0 ? -1 : this.searchParent(parent);
+        const foundParentPos = this.parentsArr === void 0 ? -1 : this.searchParent(this.parentsArr, parent);
         if (foundParentPos === -1) {
-            return this.calcInfo.addParentIfNonExistent(parent);
+            return calcInfo.addParentIfNonExistent(parent);
         }
-        this.calcInfo.touch(foundParentPos);
+        calcInfo.touch(foundParentPos);
         return false;
     }
 
-    private searchParent(search: Atom) {
-        const parents = this.parentsArr;
-        if (parents === void 0) return -1;
+    private searchParent(parents: ParentTuple[], search: Atom) {
         if (parents.length < 15) {
-            for (let i = 0; i < parents.length; i += 3) {
-                if (parents[i] === search) {
-                    return i;
-                }
-            }
-            return -1;
+            return this.simpleSearchParent(parents, search);
         }
-        let minI = 0;
-        let maxI = parents.length / 3 - 1;
-        let curI, curEl;
-        while (minI <= maxI) {
-            curI = (minI + maxI) >> 1;
-            curEl = (parents[curI * 3] as Atom).id;
-            if (curEl < search.id) {
-                minI = curI + 1;
-            } else if (curEl > search.id) {
-                maxI = curI - 1;
+        let i, el, min = 0, max = parents.length / 3 - 1;
+        while (min <= max) {
+            i = (min + max) >> 1;
+            el = (parents[i * 3] as Atom).id;
+            if (el < search.id) {
+                min = i + 1;
+            } else if (el > search.id) {
+                max = i - 1;
             } else {
-                return curI;
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private simpleSearchParent(parents: ParentTuple[], search: Atom) {
+        for (let i = 0; i < parents.length; i += 3) {
+            if (parents[i] === search) {
+                return i;
             }
         }
         return -1;
@@ -348,9 +356,10 @@ export class Atom<T = {}> {
             }
             atomsKnowingOwnChildren.reset();
         }
-        for (let i = 0; i < calcInfoPool.cache.length; i++) {
-            const calcInfo = calcInfoPool.cache[i];
+        let calcInfo = firstCalcInfo;
+        while (calcInfo !== void 0) {
             calcInfo.addedParents.fullReset();
+            calcInfo = calcInfo.next;
         }
     }
 }
